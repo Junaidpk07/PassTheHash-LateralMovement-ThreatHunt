@@ -48,9 +48,12 @@ Pass-the-Hash (PtH) is an attack technique where an adversary steals the NTLM ha
 
 ## Detection Queries
 *See the relevant folders for full query syntax:*
-- **[Splunk SPL](splunk/)**: Focuses on `EventID 4624` + `LogonType 3`.
-- **[Sentinel KQL](sentinel/)**: Correlates `DeviceLogonEvents` with `DeviceProcessEvents`.
-- **[CrowdStrike](crowdstrike/)**: Monitors behavioral IOAs in Falcon LogScale.
+| Platform    | Technique Focus      | Key Logic                     | Link     |
+| ----------- | -------------------- | ----------------------------- | -------- |
+| Splunk      | NTLM Logon Detection | EventID 4624 + LogonType 3    | View SPL |
+| Sentinel    | Lateral Movement     | DeviceLogonEvents + IpAddress | View KQL |
+| CrowdStrike | EDR Behavior         | ProcessRollup2 + Seclogo      | View QL  |
+| Sigma       | Cross-Platform       | Generic PtH Detection Logic   | View YML |
 
 ## False Positive Tuning
 Common benign sources include SCCM, backup agents (Veeam/Commvault), and legacy scanning tools. Use these templates to tune your environment:
