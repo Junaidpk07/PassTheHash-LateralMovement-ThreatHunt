@@ -12,16 +12,6 @@ Production-grade detection queries for Pass-the-Hash (PtH) lateral movement — 
 ![Status](https://img.shields.io/badge/Status-Production--Ready-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
 
-> **Production-grade detection queries for Pass-the-Hash (PtH) lateral movement — covering Splunk SPL, Microsoft Sentinel KQL, and CrowdStrike NG-SIEM. Mapped to MITRE ATT&CK T1550.002.**
-
----
-# PassTheHash-LateralMovement-ThreatHunt
-
-![MITRE ATT&CK](https://img.shields.io/badge/MITRE%20ATT%26CK-T1550.002-red?style=flat-square&logo=mitre)
-![Technique](https://img.shields.io/badge/Technique-Pass--the--Hash-critical?style=flat-square)
-![Platforms](https://img.shields.io/badge/Platforms-Splunk%20%7C%20Sentinel%20%7C%20CrowdStrike-blue?style=flat-square)
-![Status](https://img.shields.io/badge/Status-Production--Ready-brightgreen?style=flat-square)
-![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
 
 > **Production-grade detection queries for Pass-the-Hash (PtH) lateral movement — covering Splunk SPL, Microsoft Sentinel KQL, and CrowdStrike NG-SIEM. Mapped to MITRE ATT&CK T1550.002.**
 
@@ -178,185 +168,13 @@ auditpol /get /subcategory:"Logon","Account Logon","Privilege Use","Process Crea
 ## Detection Queries
 
 ### Splunk SPL
+> Full query → [`splunk/pth_primary_detection.spl`](splunk/pth_primary_detection.spl)
 
-#### Query 1 — Primary PtH Detection (NTLM Network Logon)
-
-```spl
-index=wineventlog sourcetype=WinEventLog:Security EventCode=4624
-| where LogonType=3
-| where AuthenticationPackageName="NTLM"
-| where LogonProcessName="NtLmSsp"
-| where NOT match(TargetUserName, "\$$")
-| where KeyLength=0 OR KeyLength=128
-| eval src_dest=src_ip+"|"+dest
-| stats count, dc(dest) as unique_targets, values(dest) as targets,
-        min(_time) as first_seen, max(_time) as last_seen
-  by TargetUserName, src_ip, WorkstationName
-| where unique_targets > 1
-| eval duration_mins=round((last_seen-first_seen)/60,2)
-| sort -unique_targets
-| table TargetUserName, src_ip, WorkstationName, unique_targets, targets, count, duration_mins
-```
-
-**What this detects:** Single source authenticating to multiple hosts using NTLM — classic lateral movement pattern.
-
----
-
-#### Query 2 — Local Administrator PtH (RID 500)
-
-```spl
-index=wineventlog sourcetype=WinEventLog:Security EventCode=4624
-| where LogonType=3
-| where AuthenticationPackageName="NTLM"
-| where TargetUserName="Administrator" OR TargetUserSid LIKE "%-500"
-| where NOT match(src_ip, "^(10\.0\.0\.1|192\.168\.1\.1)$")
-| stats count, values(dest) as targets, values(src_ip) as sources
-  by TargetUserName, TargetUserSid, TargetDomainName
-| where count > 0
-| sort -count
-```
-
-**What this detects:** Local Administrator account (RID 500) being used for lateral movement via PtH.
-
----
-
-#### Query 3 — LSASS Memory Access (Credential Harvesting Precursor)
-
-```spl
-index=sysmon EventCode=10
-| where TargetImage LIKE "%lsass.exe%"
-| where NOT (SourceImage LIKE "%antivirus%" OR SourceImage LIKE "%svchost%"
-             OR SourceImage LIKE "%csrss%" OR SourceImage LIKE "%wininit%")
-| where GrantedAccess IN ("0x1010", "0x1410", "0x147a", "0x143a", "0x1fffff")
-| stats count, values(GrantedAccess) as access_types, values(SourceCommandLine) as cmdlines
-  by SourceImage, SourceUser, host
-| sort -count
-```
-
-**What this detects:** Processes reading LSASS memory — the step immediately before hash dumping.
-
----
+Detects NTLM Type 3 network logons from a single source 
+hitting multiple hosts — the primary PtH lateral movement signal.
 
 ### Microsoft Sentinel KQL
-
-#### Query 1 — Primary PtH Detection
-
-```kql
-SecurityEvent
-| where EventID == 4624
-| where LogonType == 3
-| where AuthenticationPackageName == "NTLM"
-| where LogonProcessName == "NtLmSsp"
-| where AccountType == "User"
-| where not(TargetAccount endswith "$")
-| summarize
-    UniqueTargets = dcount(Computer),
-    Targets = make_set(Computer),
-    TotalLogons = count(),
-    FirstSeen = min(TimeGenerated),
-    LastSeen = max(TimeGenerated)
-    by TargetUserName, IpAddress, WorkstationName
-| where UniqueTargets > 1
-| extend DurationMins = datetime_diff('minute', LastSeen, FirstSeen)
-| project-reorder TargetUserName, IpAddress, UniqueTargets, TotalLogons, DurationMins, Targets
-| order by UniqueTargets desc
-```
-
----
-
-#### Query 2 — PtH Hunting with Kerberos Absence Correlation
-
-```kql
-let ntlm_logons = SecurityEvent
-| where EventID == 4624
-| where LogonType == 3
-| where AuthenticationPackageName == "NTLM"
-| project TimeGenerated, TargetUserName, IpAddress, Computer, LogonGuid;
-
-let kerberos_logons = SecurityEvent
-| where EventID == 4768
-| project TimeGenerated, TargetUserName, IpAddress;
-
-ntlm_logons
-| join kind=leftanti kerberos_logons
-    on TargetUserName, IpAddress
-| summarize count(), make_set(Computer) by TargetUserName, IpAddress
-| where count_ > 0
-| order by count_ desc
-```
-
-**What this detects:** NTLM logons with no corresponding Kerberos ticket request — strong indicator of PtH since legitimate users get a Kerberos ticket when logging in interactively.
-
----
-
-#### Query 3 — Scheduled Analytics Rule (Production-Ready)
-
-```kql
-// Rule Name: Pass-the-Hash Lateral Movement Detection
-// Severity: High
-// Frequency: Every 1 hour, lookback 1 hour
-// ATT&CK: T1550.002
-
-let lookback = 1h;
-let threshold_targets = 2;
-let threshold_logons = 3;
-
-SecurityEvent
-| where TimeGenerated > ago(lookback)
-| where EventID == 4624
-| where LogonType == 3
-| where AuthenticationPackageName =~ "NTLM"
-| where LogonProcessName =~ "NtLmSsp"
-| where not(TargetAccount endswith "$")
-| where not(TargetUserName in~ ("ANONYMOUS LOGON", "-"))
-| summarize
-    LogonCount = count(),
-    UniqueHosts = dcount(Computer),
-    HostList = make_set(Computer, 20),
-    FirstSeen = min(TimeGenerated),
-    LastSeen = max(TimeGenerated)
-    by TargetUserName, IpAddress, WorkstationName
-| where UniqueHosts >= threshold_targets or LogonCount >= threshold_logons
-| extend
-    AlertSeverity = case(UniqueHosts >= 5, "High", UniqueHosts >= 3, "Medium", "Low"),
-    Technique = "T1550.002",
-    Description = strcat("PtH suspected: ", TargetUserName, " authenticated via NTLM to ",
-                         UniqueHosts, " hosts from ", IpAddress)
-```
-
----
-
-### CrowdStrike NG-SIEM
-
-#### Query 1 — NTLM Lateral Movement
-
-```
-#event_simpleName=UserLogon
-| LogonType_decimal=3
-| AuthenticationPackage=NTLM
-| UserIsAdmin_decimal=1
-  OR TargetUserName=Administrator
-| stats count=count(),
-        dc(ComputerName) as unique_hosts,
-        values(ComputerName) as hosts
-  by UserName, RemoteAddressIP4
-| where unique_hosts > 1
-| sort -unique_hosts
-```
-
----
-
-#### Query 2 — Process Injection into LSASS
-
-```
-#event_simpleName=ProcessRollup2
-| TargetProcessName=/lsass\.exe/i
-| SourceProcessName!=/System|csrss|wininit|svchost/
-| stats count(), values(SourceProcessCommandLine) as cmds
-  by SourceProcessName, ComputerName, UserName
-```
-
----
+> Full query → [`sentinel/pth_primary_detection.kql`](sentinel/pth_primary_detection.kql)
 
 ## False Positive Tuning
 
