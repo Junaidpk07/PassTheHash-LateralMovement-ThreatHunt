@@ -2,11 +2,7 @@
 Pass-the-Hash lateral movement hunting: Splunk SPL + Sentinel KQL + CrowdStrike queries (T1550.002). Production SIEM rules included.
 
 Production-grade detection queries for Pass-the-Hash (PtH) lateral movement — covering Splunk SPL, Microsoft Sentinel KQL, and CrowdStrike NG-SIEM. Mapped to MITRE ATT&CK T1550.002.
-# PassTheHash-LateralMovement-ThreatHunt
 
-![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen)
-![MITRE ATT&CK](https://img.shields.io/badge/MITRE-T1550.002-blue)
-![Stack: SIEM/EDR](https://img.shields.io/badge/Stack-Splunk|Sentinel|CrowdStrike-orange)
 
 # PassTheHash-LateralMovement-ThreatHunt
 
