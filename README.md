@@ -2,215 +2,77 @@
 Pass-the-Hash lateral movement hunting: Splunk SPL + Sentinel KQL + CrowdStrike queries (T1550.002). Production SIEM rules included.
 
 Production-grade detection queries for Pass-the-Hash (PtH) lateral movement — covering Splunk SPL, Microsoft Sentinel KQL, and CrowdStrike NG-SIEM. Mapped to MITRE ATT&CK T1550.002.
+# PassTheHash-LateralMovement-ThreatHunt
 
+![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen)
+![MITRE ATT&CK](https://img.shields.io/badge/MITRE-T1550.002-blue)
+![Stack: SIEM/EDR](https://img.shields.io/badge/Stack-Splunk|Sentinel|CrowdStrike-orange)
 
-Table of Contents
+Production-grade detection queries for Pass-the-Hash (PtH) lateral movement—covering Splunk SPL, Microsoft Sentinel KQL, and CrowdStrike NG-SIEM. Mapped to MITRE ATT&CK T1550.002.
 
-What is Pass-the-Hash?
-How PtH Works — Step by Step
-What to Hunt For
-ATT&CK Coverage
-Log Source Requirements
-Detection Queries
+## Table of Contents
+1. [What is Pass-the-Hash?](#what-is-pass-the-hash)
+2. [How PtH Works](#how-pth-works)
+3. [What to Hunt For](#what-to-hunt-for)
+4. [ATT&CK Coverage](#attck-coverage)
+5. [Detection Queries](#detection-queries)
+6. [False Positive Tuning](#false-positive-tuning)
+7. [Triage Checklist](#triage-checklist)
+8. [Repository Structure](#repository-structure)
 
-Splunk SPL
-Microsoft Sentinel KQL
-CrowdStrike NG-SIEM
+---
 
+## What is Pass-the-Hash?
+Pass-the-Hash (PtH) is an attack technique where an adversary steals the NTLM hash of a user's password from memory (e.g., via Mimikatz) and uses it to authenticate—without ever knowing the plaintext password.
 
-False Positive Tuning
-Triage Checklist
-Setup & Requirements
-Repository Structure
-Contributing
-References
+## How PtH Works
+- **Step 1: Initial Access**: Attacker compromises one endpoint.
+- **Step 2: Credential Harvesting**: Attacker dumps NTLM hashes from LSASS memory.
+- **Step 3: Hash Reuse**: Attacker crafts an NTLM authentication using the stolen hash.
+- **Step 4: Lateral Movement**: Attacker authenticates to another machine (SMB, WMI, PsExec).
+- **Step 5: Privilege Escalation**: If the hash belongs to a Domain/local Admin → full control.
 
+## What to Hunt For
+- **NTLM Network Logon**: LogonType 3 + AuthenticationPackageName=NTLM.
+- **Lateral Pattern**: Workstation-to-Workstation authentication.
+- **RID 500 Usage**: Built-in Administrator account used for network logon.
+- **Session Characteristics**: Missing workstation name or KeyLength = 0.
+- **Process Indicators**: LSASS memory reads (Sysmon Event ID 10) by non-system processes.
 
-What is Pass-the-Hash?
-Pass-the-Hash (PtH) is an attack technique where an adversary steals the NTLM hash of a user's password from memory (e.g., via Mimikatz) and uses that hash directly to authenticate — without ever knowing the plaintext password.
-This allows attackers to:
+## ATT&CK Coverage
+| Technique | ID | Tactic | Coverage |
+| :--- | :--- | :--- | :--- |
+| Use Alternate Auth Material | T1550.002 | Lateral Movement | ✅ Full |
+| Valid Accounts | T1078.002 | Defense Evasion | ⚠️ Partial |
+| Credential Dumping | T1003.001 | Credential Access | ⚠️ Partial |
 
-Move laterally across the network to other machines
-Impersonate privileged users (e.g., local Administrator)
-Bypass multi-factor authentication in environments relying on NTLM
+## Detection Queries
+*See the relevant folders for full query syntax:*
+- **[Splunk SPL](splunk/)**: Focuses on `EventID 4624` + `LogonType 3`.
+- **[Sentinel KQL](sentinel/)**: Correlates `DeviceLogonEvents` with `DeviceProcessEvents`.
+- **[CrowdStrike](crowdstrike/)**: Monitors behavioral IOAs in Falcon LogScale.
 
-PtH is classified under MITRE ATT&CK T1550.002 — Use Alternate Authentication Material: Pass the Hash.
+## False Positive Tuning
+Common benign sources include SCCM, backup agents (Veeam/Commvault), and legacy scanning tools. Use these templates to tune your environment:
+- **Splunk**: `| where NOT (src_ip IN ("10.0.1.5", "10.0.1.6"))`
+- **KQL**: `| where IpAddress !in ("10.0.1.5", "10.0.1.6")`
 
-How PtH Works — Step by Step
-Understanding the attack chain helps you understand what to detect:
-[Step 1] Initial Access
-         Attacker compromises one endpoint (phishing, exploit, etc.)
+## Triage Checklist
+1. Confirm NTLM Type 3 logon on source IP.
+2. Check for missing Interactive (Type 2) logon.
+3. Search Sysmon Event ID 10 on source host for LSASS access.
+4. Escalate if: multiple hosts hit + LSASS access + admin account = **HIGH CONFIDENCE PtH**.
 
-[Step 2] Credential Harvesting
-         Attacker dumps NTLM hashes from LSASS memory
-         Tools: Mimikatz, Impacket secretsdump, CrackMapExec
-
-[Step 3] Hash Reuse (The Attack)
-         Attacker crafts an NTLM authentication using the stolen hash
-         No password cracking required — the hash IS the credential
-
-[Step 4] Lateral Movement
-         Attacker authenticates to another machine (SMB, WMI, PsExec)
-         Appears as a legitimate network logon (Event ID 4624)
-
-[Step 5] Privilege Escalation / Persistence
-         If hash belongs to Domain Admin or local Admin → full control
-Key insight for defenders: PtH always produces a Network logon (Type 3) using NTLM — this is the main detection signal. Normal users in modern environments authenticate via Kerberos, not NTLM.
-
-What to Hunt For
-These are the primary indicators you need to look for in your logs:
-1. NTLM Network Logon Without Prior Interactive Session
-
-Event ID 4624 with LogonType=3 AND AuthenticationPackageName=NTLM
-No corresponding Event ID 4648 or 4624 Type 2 (interactive) from the same user on the source machine
-This is the primary detection signal
-
-2. Logon from Workstation to Workstation (Lateral Movement Pattern)
-
-Source IP is another workstation, not a server or domain controller
-User account is authenticating to a machine they don't normally access
-Look for WorkstationName ≠ TargetServerName
-
-3. Use of Built-in or Local Administrator Accounts
-
-RID 500 (local Administrator) being used for network authentication
-Local accounts (not domain accounts) authenticating over the network
-TargetUserName = Administrator with LogonType=3
-
-4. Suspicious Session Characteristics
-
-LogonProcessName = NtLmSsp (NTLM Security Support Provider — sign of hash-based auth)
-KeyLength = 0 (indicates no session key — common in PtH)
-Blank or mismatched WorkstationName field
-
-5. High Volume of Lateral Authentication
-
-Single source IP authenticating to many hosts in short time window
-Multiple failed logons (Event ID 4625) followed by a successful 4624
-CrackMapExec/Impacket spray patterns
-
-6. Process-Based Indicators (Endpoint)
-
-lsass.exe memory reads by non-system processes (Sysmon Event ID 10)
-sekurlsa or mimikatz strings in command-line logs
-cmd.exe or powershell.exe spawned from unexpected parent processes post-authentication
-
-
-ATT&CK Coverage
-ATT&CK IDTechniqueSub-techniqueTacticCoverageT1550.002Use Alternate Authentication MaterialPass the HashLateral Movement✅ FullT1078.002Valid AccountsDomain AccountsDefense Evasion✅ PartialT1550Use Alternate Authentication Material(parent)Lateral Movement✅ FullT1003.001OS Credential DumpingLSASS MemoryCredential Access✅ PartialT1021.002Remote ServicesSMB/Windows Admin SharesLateral Movement✅ Partial
-
-Log Source Requirements
-Windows Event Logs (Minimum Required)
-Event IDLog ChannelDescriptionWhy It Matters4624SecuritySuccessful account logonCore detection — NTLM Type 3 logons4625SecurityFailed account logonPre-PtH spray detection4648SecurityExplicit credentials usedDetects alternate credential use4672SecuritySpecial privileges assignedAdmin-level PtH escalation4768SecurityKerberos TGT requestedAbsence of Kerberos = NTLM forced4776SecurityNTLM credential validationConfirms NTLM usage on DC
-Sysmon (Highly Recommended)
-Event IDDescriptionWhy It Matters10Process access (LSASS read)Credential harvesting detection1Process creationDetects Mimikatz, PsExec, etc.3Network connectionLateral movement network flows
-Audit Policy Requirements
-Ensure these audit policies are enabled on all endpoints and DCs:
-Audit Logon Events              → Success + Failure
-Audit Account Logon Events      → Success + Failure
-Audit Privilege Use             → Success
-Audit Process Creation          → Success
-PowerShell to verify:
-powershellauditpol /get /subcategory:"Logon","Account Logon","Privilege Use","Process Creation"
-
-Detection Queries
-### Splunk SPL
-> Full query → [`splunk/pth_primary_detection.spl`](splunk/pth_primary_detection.spl)
-
-Detects NTLM Type 3 network logons from a single source 
-hitting multiple hosts — the primary PtH lateral movement signal.
-
-### Microsoft Sentinel KQL
-> Full query → [`sentinel/pth_primary_detection.kql`](sentinel/pth_primary_detection.kql)
-False Positive Tuning
-Before deploying these rules in production, tune out the following common false positives:
-Known Benign NTLM Sources
-SourceReasonRecommended ActionSCCM / MECM serversUses NTLM for software deploymentWhitelist SCCM server IPsBackup agents (Veeam, Commvault)Authenticates via NTLM to reach sharesWhitelist backup server IPs + service accountsPrinters / MFDsUse NTLM for scan-to-folderWhitelist device IPsLegacy applicationsOlder apps don't support KerberosWhitelist known app service accountsDomain Controllers (DC to DC)NTLM used for replication in some configsWhitelist DC IP rangesMonitoring tools (PRTG, SolarWinds)Poll endpoints via NTLMWhitelist monitoring server IPs
-Tuning Template (Splunk)
-spl| where NOT (src_ip IN ("10.0.1.5","10.0.1.6"))
-| where NOT (TargetUserName IN ("svc_backup","svc_sccm","svc_monitoring"))
-| where NOT (WorkstationName IN ("BACKUPSRV01","SCCMSRV01"))
-Tuning Template (KQL)
-kql| where IpAddress !in ("10.0.1.5", "10.0.1.6")
-| where TargetUserName !in~ ("svc_backup", "svc_sccm", "svc_monitoring")
-| where WorkstationName !in~ ("BACKUPSRV01", "SCCMSRV01")
-Reducing Noise with Baseline
-Run Query 1 in detection mode for 2 weeks before enabling alerting. Collect:
-
-Which source IPs regularly use NTLM Type 3 logons
-Which service accounts appear frequently
-What's the normal unique_targets count per user per hour
-
-Then set your thresholds based on what's 2-3x above the baseline.
-
-Triage Checklist
-When an alert fires, follow these steps:
-[ ] 1. Confirm NTLM Type 3 logon on source IP — is it a user machine or a server?
-[ ] 2. Check if the user has any Interactive (Type 2) logon in the same window → if not, suspicious
-[ ] 3. Look up the source IP → is it expected to authenticate to that destination?
-[ ] 4. Check for Event ID 4625 (failed logons) just before the 4624 → spray pattern?
-[ ] 5. Search Sysmon Event ID 10 on the source host → any LSASS access in the last 24h?
-[ ] 6. Check for Mimikatz / Impacket strings in process command-line logs on source
-[ ] 7. Is the authenticating account a local admin (RID 500) or domain account?
-[ ] 8. Did the destination machine have any outbound connections after the logon?
-[ ] 9. Correlate with EDR telemetry for lateral tool transfer (Sysmon 11 file creation)
-[ ] 10. Escalate if: multiple hosts hit + LSASS access + admin account = HIGH CONFIDENCE PtH
-
-Setup & Requirements
-Splunk Requirements
-
-Version: Splunk 8.x+
-Indexes: wineventlog, sysmon
-Apps: Windows TA (Splunk_TA_windows) properly configured
-CIM: Ensure Authentication data model is accelerated for faster search
-
-Microsoft Sentinel Requirements
-
-Tables: SecurityEvent, SysmonEvent (via Azure Monitor Agent)
-Connector: Windows Security Events connector (Legacy or AMA)
-UEBA: Enable for TargetUserName entity enrichment
-Workspace: Ensure audit policies forward 4624, 4625, 4648, 4672, 4768, 4776
-
-CrowdStrike Requirements
-
-Sensor version: 6.x+
-Data: Ensure UserLogon and ProcessRollup2 event types are enabled
-Module: Falcon Insight (EDR) required for process-level events
-
-
-Repository Structure
+## Repository Structure
+```text
 PassTheHash-LateralMovement-ThreatHunt/
-├── splunk/
-│   ├── pth_primary_detection.spl
-│   ├── pth_local_admin.spl
-│   └── pth_lsass_access.spl
-├── sentinel/
-│   ├── pth_primary_detection.kql
-│   ├── pth_kerberos_absence.kql
-│   └── pth_analytics_rule.kql
-├── crowdstrike/
-│   ├── pth_ntlm_lateral.ql
-│   └── pth_lsass_injection.ql
-├── sigma/
-│   └── pth_lateral_movement.yml
-├── docs/
-│   └── false_positive_baseline.md
-└── README.md
+├── splunk/              # SPL queries
+├── sentinel/            # KQL queries
+├── crowdstrike/         # Falcon LogScale queries
+├── sigma/               # Generic SIGMA rules
+├── docs/                # Theory & tuning baselines
+└── README.md            # Documentation
+```
 
-Contributing
-Contributions are welcome — especially:
-
-New platform queries (QRadar, Elastic, Chronicle)
-False positive tuning additions
-Test cases with sample log data
-Sigma rule improvements
-
-Please open an issue before submitting large PRs. Use the issue template for false positive reports.
-
-References
-
-MITRE ATT&CK T1550.002 — Pass the Hash
-Microsoft Security Event ID 4624
-Impacket — Pass-the-Hash Tools
-Sigma Rules Project
-Windows NTLM Authentication Overview
+---
+*Created by Junaid | Cybersecurity Analyst @ Capgemini | License: MIT*
