@@ -25,9 +25,7 @@ Production-grade detection queries for Pass-the-Hash (PtH) lateral movement — 
 * [Log Source Requirements](#log-source-requirements)
 * [Detection Queries](#detection-queries)
 
-  * [Splunk SPL](#splunk-spl)
-  * [Microsoft Sentinel KQL](#microsoft-sentinel-kql)
-  * [CrowdStrike NG-SIEM](#crowdstrike-ng-siem)
+  * ### Splunk - [Primary Detection](detections/T1550.002_pass_the_hash/splunk/pth_primary_detection.spl) - [Local Admin Detection](detections/T1550.002_pass_the_hash/splunk/pth_local_admin.spl) ### Sentinel - [Primary Detection](detections/T1550.002_pass_the_hash/sentinel/pth_primary_detection.kql)
 * [False Positive Tuning](#false-positive-tuning)
 * [Triage Checklist](#triage-checklist)
 * [Setup & Requirements](#setup--requirements)
